@@ -71,6 +71,7 @@ public class TransactionTableRegion implements TableRegion {
     private final AtomicLong cacheRows = new AtomicLong();
     private final AtomicReference<State> state;
     private final AtomicBoolean ctl = new AtomicBoolean(false);
+    private final AtomicLong chunkIdGenerator = new AtomicLong(0);
     private volatile Chunk activeChunk;
     private final ConcurrentLinkedQueue<Chunk> inactiveChunks = new ConcurrentLinkedQueue<>();
     private volatile String label;
@@ -79,7 +80,6 @@ public class TransactionTableRegion implements TableRegion {
     private final int maxRetries;
     private final int retryIntervalInMs;
     private volatile int numRetries;
-    private volatile long lastFailTimeMs;
 
     // First exception if retry many times
     private volatile Throwable firstException;
@@ -107,7 +107,7 @@ public class TransactionTableRegion implements TableRegion {
                 properties.getTableProperties());
         this.state = new AtomicReference<>(State.ACTIVE);
         this.lastCommitTimeMills = System.currentTimeMillis();
-        this.activeChunk = new Chunk(properties.getDataFormat());
+        this.activeChunk = new Chunk(properties.getDataFormat(), chunkIdGenerator.getAndIncrement());
         this.maxRetries = maxRetries;
         this.retryIntervalInMs = retryIntervalInMs;
         initHeaders(properties);
@@ -224,7 +224,7 @@ public class TransactionTableRegion implements TableRegion {
             return;
         }
         inactiveChunks.add(activeChunk);
-        activeChunk = new Chunk(properties.getDataFormat());
+        activeChunk = new Chunk(properties.getDataFormat(), chunkIdGenerator.getAndIncrement());
     }
 
     protected int write0(byte[] row) {
@@ -309,7 +309,7 @@ public class TransactionTableRegion implements TableRegion {
 
         if (label == null) {
             // if the data has never been flushed (label == null), the commit should fail
-            // so that StreamLoadManagerV2#init will schedule to flush the data first, and
+            // so that DefaultStreamLoadManager#init will schedule to flush the data first, and
             // then trigger commit again
             boolean commitSuccess = cacheBytes.get() == 0;
             state.compareAndSet(State.COMMITTING, State.ACTIVE);
@@ -369,7 +369,6 @@ public class TransactionTableRegion implements TableRegion {
 
         responseFuture = null;
         numRetries += 1;
-        lastFailTimeMs = System.currentTimeMillis();
         LOG.warn("Failed to flush data for db: {}, table: {}, and will retry for {} times after {} ms",
                 database, table, numRetries, retryIntervalInMs, e);
         streamLoad(retryIntervalInMs);
